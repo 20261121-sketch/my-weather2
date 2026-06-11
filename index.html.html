@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>실시간 날씨 대시보드 (안정화 버전)</title>
+<style>
+  body {
+    font-family: 'Pretendard', 'Malgun Gothic', sans-serif;
+    margin: 0; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, #74ebd5, #ACB6E5);
+    color: #333;
+    transition: background 0.8s ease, color 0.8s ease;
+  }
+  
+  body.Clear { background: linear-gradient(135deg, #f6d365, #fda085); color: #333; }
+  body.Clouds { background: linear-gradient(135deg, #bdc3c7, #2c3e50); color: white; }
+  body.Rain { background: linear-gradient(135deg, #00c6fb, #005bea); color: white; }
+  body.Snow { background: linear-gradient(135deg, #e6dada, #274046); color: white; }
+  body.Thunderstorm { background: linear-gradient(135deg, #141e30, #243b55); color: white; }
+
+  .weather-app {
+    background: rgba(255, 255, 255, 0.25);
+    backdrop-filter: blur(15px);
+    padding: 30px;
+    border-radius: 20px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+    width: 90%; max-width: 420px;
+    text-align: center;
+  }
+
+  .search-box { display: flex; margin-bottom: 20px; }
+  .search-box input { flex: 1; padding: 12px; border: none; border-radius: 10px 0 0 10px; outline: none; font-size: 1em; }
+  .search-box button { padding: 12px 20px; border: none; background: #333; color: white; border-radius: 0 10px 10px 0; cursor: pointer; font-weight: bold; }
+
+  .weather-info h2 { margin: 10px 0 5px; font-size: 1.8em; }
+  .weather-icon { font-size: 5em; margin: 10px 0; line-height: 1; filter: drop-shadow(2px 4px 6px rgba(0,0,0,0.2)); }
+  .weather-info h1 { margin: 0; font-size: 3.5em; font-weight: 800; }
+  .weather-info p { font-size: 1.1em; margin-bottom: 20px; }
+
+  .details { display: flex; justify-content: space-between; margin-top: 20px; font-size: 0.95em; background: rgba(255,255,255,0.4); padding: 15px; border-radius: 15px; color: #333; }
+  .details div { flex: 1; border-right: 1px solid rgba(0,0,0,0.1); }
+  .details div:last-child { border-right: none; }
+  .details span { font-size: 1.2em; font-weight: bold; display: block; margin-top: 5px; }
+
+  .favorites { margin-top: 25px; text-align: left; background: rgba(0,0,0,0.05); padding: 15px; border-radius: 15px; }
+  .favorites h3 { margin: 0 0 10px 0; font-size: 1.1em; display: flex; justify-content: space-between; align-items: center; }
+  .fav-btn { background: rgba(255,255,255,0.6); border: none; padding: 8px 12px; border-radius: 15px; cursor: pointer; margin: 0 5px 5px 0; transition: 0.2s; font-weight: bold; color: #333; }
+  .fav-btn:hover { background: #333; color: white; }
+  .add-fav-btn { background: #ffeb3b; border: none; padding: 5px 10px; border-radius: 10px; cursor: pointer; font-size: 0.8em; font-weight: bold; color: #333; }
+</style>
+</head>
+<body>
+
+<div class="weather-app">
+  <div class="search-box">
+    <input type="text" id="cityInput" placeholder="도시 검색 (예: 서울, 부산)" onkeypress="if(event.keyCode==13) searchCity()">
+    <button onclick="searchCity()">검색</button>
+  </div>
+
+  <div class="weather-info" id="weatherInfo">
+    <h2>날씨 불러오는 중...⏳</h2>
+    <p>잠시만 기다려 주세요.</p>
+  </div>
+
+  <div class="details" id="weatherDetails" style="display: none;">
+    <div>💧 습도<span id="humidity">--%</span></div>
+    <div>💨 바람<span id="wind">--m/s</span></div>
+    <div>😷 미세먼지<span id="aqi">--</span></div>
+  </div>
+
+  <div class="favorites">
+    <h3>⭐ 관심 지역 <button class="add-fav-btn" onclick="addFavorite()">+ 현재 지역 저장</button></h3>
+    <div id="favList"></div>
+  </div>
+</div>
+
+<script>
+  let currentCityName = '서울'; // 기본값 설정
+
+  // 1. 앱 실행 시 기본적으로 '서울' 날씨를 먼저 띄우고 위치 권한을 물어봄 (오류 방지)
+  window.onload = () => {
+    loadFavorites();
+    
+    // 일단 서울 날씨를 기본으로 로드해서 흰 화면 방지
+    getWeather(37.5665, 126.9780, '서울'); 
+
+    // 브라우저 위치 정보가 지원되면 내 위치 가져오기 시도
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        position => getWeather(position.coords.latitude, position.coords.longitude, '현재 위치'),
+        () => console.log('위치 권한 거부됨, 기본 위치(서울) 유지')
+      );
+    }
+  };
+
+  function parseWeatherCode(code) {
+    if (code === 0) return { desc: '맑음', bg: 'Clear', icon: '☀️' };
+    if (code >= 1 && code <= 3) return { desc: '구름조금/흐림', bg: 'Clouds', icon: '☁️' };
+    if (code >= 51 && code <= 67) return { desc: '비', bg: 'Rain', icon: '🌧️' };
+    if (code >= 71 && code <= 77) return { desc: '눈', bg: 'Snow', icon: '❄️' };
+    if (code >= 80 && code <= 82) return { desc: '소나기', bg: 'Rain', icon: '🌦️' };
+    if (code >= 95 && code <= 99) return { desc: '뇌우', bg: 'Thunderstorm', icon: '⛈️' };
+    return { desc: '알 수 없음', bg: 'Clear', icon: '❓' };
+  }
+
+  function parseAQI(aqi) {
+    if (aqi === undefined || aqi === null) return '정보 없음 ⚪';
+    if (aqi <= 20) return '좋음 🟢';
+    if (aqi <= 40) return '보통 🟡';
+    if (aqi <= 60) return '나쁨 🟠';
+    if (aqi <= 80) return '매우나쁨 🔴';
+    return '위험 🟣';
+  }
+
+  // 2. 날씨 및 미세먼지 API 호출 (오류 발생 시 화면에 안내 문구 표시)
+  async function getWeather(lat, lon, cityName) {
+    try {
+      currentCityName = cityName;
+      
+      const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m`);
+      if (!weatherRes.ok) throw new Error('날씨 서버 응답 오류');
+      const weatherData = await weatherRes.json();
+      
+      let aqiValue = null;
+      try {
+        const airRes = await fetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=european_aqi`);
+        if (airRes.ok) {
+          const airData = await airRes.json();
+          aqiValue = airData.current.european_aqi;
+        }
+      } catch (e) {
+        console.warn('미세먼지 데이터를 가져오지 못했습니다.');
+      }
+      
+      updateUI(weatherData.current, aqiValue, cityName);
+    } catch (error) {
+      document.getElementById('weatherInfo').innerHTML = `<h2>오류 발생 🚨</h2><p>데이터를 불러오지 못했습니다.<br>인터넷 연결을 확인해 주세요.</p>`;
+    }
+  }
+
+  // 3. 검색 기능 (검색 결과가 없을 경우 대비)
+  async function searchCity() {
+    const city = document.getElementById('cityInput').value.trim();
+    if(!city) return;
+
+    try {
+      const res = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${city}&count=1&language=ko`);
+      const data = await res.json();
+      
+      if (!data.results || data.results.length === 0) { 
+        alert("도시를 찾을 수 없습니다. 정확한 이름을 입력하거나 영어로 검색해 보세요! (예: Seoul)"); 
+        return; 
+      }
+      
+      const target = data.results[0];
+      getWeather(target.latitude, target.longitude, target.name);
+    } catch (error) {
+      alert("검색 중 오류가 발생했습니다.");
+    }
+  }
+
+  function updateUI(current, aqi, cityName) {
+    const infoDiv = document.getElementById('weatherInfo');
+    const weatherInfo = parseWeatherCode(current.weather_code);
+    const aqiText = parseAQI(aqi);
+
+    infoDiv.innerHTML = `
+      <h2>${cityName}</h2>
+      <div class="weather-icon">${weatherInfo.icon}</div>
+      <h1>${Math.round(current.temperature_2m)}°C</h1>
+      <p><b>${weatherInfo.desc}</b> (체감 ${Math.round(current.apparent_temperature)}°C)</p>
+    `;
+
+    document.getElementById('weatherDetails').style.display = 'flex';
+    document.getElementById('humidity').innerText = `${current.relative_humidity_2m}%`;
+    document.getElementById('wind').innerText = `${current.wind_speed_10m}m/s`;
+    document.getElementById('aqi').innerText = aqiText;
+
+    document.body.className = weatherInfo.bg; 
+  }
+
+  function addFavorite() {
+    if(!currentCityName || currentCityName === '현재 위치') {
+      alert("정확한 도시 이름을 검색한 후 추가해 주세요!");
+      return;
+    }
+    let favs = JSON.parse(localStorage.getItem('weatherFavs')) || [];
+    
+    if(!favs.includes(currentCityName)) {
+      favs.push(currentCityName);
+      localStorage.setItem('weatherFavs', JSON.stringify(favs));
+      loadFavorites();
+    } else {
+      alert("이미 추가된 지역입니다!");
+    }
+  }
+
+  function loadFavorites() {
+    const favs = JSON.parse(localStorage.getItem('weatherFavs')) || [];
+    const favList = document.getElementById('favList');
+    favList.innerHTML = '';
+    
+    favs.forEach((city, index) => {
+      const btn = document.createElement('button');
+      btn.className = 'fav-btn';
+      btn.innerHTML = `${city} <span style="color:red; font-size:0.8em;" onclick="removeFavorite(event, ${index})">✖</span>`;
+      btn.onclick = (e) => {
+        if(e.target.tagName !== 'SPAN') {
+            document.getElementById('cityInput').value = city;
+            searchCity();
+        }
+      };
+      favList.appendChild(btn);
+    });
+  }
+
+  function removeFavorite(event, index) {
+    event.stopPropagation(); 
+    let favs = JSON.parse(localStorage.getItem('weatherFavs')) || [];
+    favs.splice(index, 1);
+    localStorage.setItem('weatherFavs', JSON.stringify(favs));
+    loadFavorites();
+  }
+</script>
+</body>
+</html>
